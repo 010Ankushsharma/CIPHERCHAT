@@ -1,0 +1,46 @@
+# ── Gradle ────────────────────────────────────────────────────────────
+.gradle/
+build/
+**/build/
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/**/build/
+
+# ── Android ───────────────────────────────────────────────────────────
+*.apk
+*.aab
+*.ap_
+*.dex
+local.properties
+*.jks
+*.keystore
+*.properties
+!gradle.properties
+
+# ── Kotlin / IDE ──────────────────────────────────────────────────────
+.idea/
+*.iml
+*.ipr
+*.iws
+.DS_Store
+*.swp
+
+# ── Secrets — NEVER commit these ─────────────────────────────────────
+.env
+.env.*
+*.pem
+*.key
+kubeconfig.yaml
+kubeconfig-*.yaml
+*secret*.yaml
+*secret*.json
+
+# ── Docker ────────────────────────────────────────────────────────────
+docker/secrets/
+
+# ── Outputs ───────────────────────────────────────────────────────────
+out/
+dist/
+
+# ── macOS ─────────────────────────────────────────────────────────────
+.DS_Store
+__MACOSX/
