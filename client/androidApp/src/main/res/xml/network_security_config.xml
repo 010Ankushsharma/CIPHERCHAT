@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Network Security Config for CipherChat.
+
+  Two policies:
+    debug builds  — allow cleartext to localhost so the development
+                    server (docker compose up) is reachable without TLS.
+    release builds — HTTPS only everywhere, with certificate pinning to
+                    the CipherChat server's leaf certificate. Even if a
+                    network-level attacker installs a rogue CA cert on
+                    the device, pinning prevents them from intercepting
+                    CipherChat's API traffic.
+
+  Certificate pins must be updated whenever the server certificate
+  rotates (typically annually). The backup-pin provides 30 days of
+  overlap during rotation — see key rotation runbook in docs/.
+-->
+<network-security-config>
+
+    <debug-overrides>
+        <!-- Allow HTTP to local dev server only in debug builds. -->
+        <domain-config cleartextTrafficPermitted="true">
+            <domain includeSubdomains="false">10.0.2.2</domain>  <!-- Android emulator localhost alias -->
+            <domain includeSubdomains="false">localhost</domain>
+        </domain-config>
+    </debug-overrides>
+
+    <base-config cleartextTrafficPermitted="false">
+        <!-- Disallow all cleartext traffic in release builds.
+             Any HTTP request (not HTTPS) will throw a security exception. -->
+        <trust-anchors>
+            <certificates src="system" />
+            <!-- User-installed CAs are excluded (default in API 24+) —
+                 this prevents corporate proxies or attacker-installed
+                 root certificates from intercepting CipherChat traffic. -->
+        </trust-anchors>
+    </base-config>
+
+    <domain-config>
+        <domain includeSubdomains="true">api.cipherchat.app</domain>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+        <pin-set expiration="2026-12-01">
+            <!-- Primary pin: SHA-256 of the server's leaf certificate public key.
+                 Replace with the actual pin before production release:
+                 openssl s_client -connect api.cipherchat.app:443 | \
+                 openssl x509 -pubkey -noout | \
+                 openssl pkey -pubin -outform der | \
+                 openssl dgst -sha256 -binary | base64 -->
+            <pin digest="SHA-256">REPLACE_WITH_REAL_CERTIFICATE_PIN_BEFORE_RELEASE=</pin>
+            <!-- Backup pin (next certificate, for zero-downtime rotation): -->
+            <pin digest="SHA-256">REPLACE_WITH_BACKUP_CERTIFICATE_PIN_BEFORE_RELEASE=</pin>
+        </pin-set>
+    </domain-config>
+
+</network-security-config>
