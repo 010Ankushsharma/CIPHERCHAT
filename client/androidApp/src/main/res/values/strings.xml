@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">CipherChat</string>
+
+    <!-- Notification channels — declared here for system integration;
+         channel creation happens in a NotificationChannelManager class
+         (to be built alongside the notification feature). -->
+    <string name="notification_channel_messages_name">Messages</string>
+    <string name="notification_channel_messages_description">New message notifications</string>
+    <string name="notification_channel_calls_name">Calls</string>
+    <string name="notification_channel_calls_description">Incoming call notifications</string>
+
+    <!-- Permission rationales — shown in the system permission dialog
+         that Android displays before camera/microphone requests. Clear,
+         honest rationales improve user grant rates and satisfy Play
+         Store review requirements. -->
+    <string name="permission_camera_rationale">Camera access is used only to scan QR codes for device linking. CipherChat never accesses your camera in the background.</string>
+    <string name="permission_microphone_rationale">Microphone access is used for voice messages and calls. CipherChat never accesses your microphone unless you actively record.</string>
+    <string name="permission_notifications_rationale">Enable notifications to receive new messages even when the app is in the background.</string>
+</resources>
