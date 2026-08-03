@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base app theme — windowBackground set to black so the splash
+         doesn't flash white before Compose renders. -->
+    <style name="Theme.CipherChat" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+
+    <!-- Splash screen theme — shown by the OS before the Activity
+         draws its first frame. Uses the core-splashscreen library. -->
+    <style name="Theme.CipherChat.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">#14120F</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_splash_logo</item>
+        <item name="postSplashScreenTheme">@style/Theme.CipherChat</item>
+    </style>
+</resources>
