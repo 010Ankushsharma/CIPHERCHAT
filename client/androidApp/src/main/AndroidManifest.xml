@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Network — required for all API/WebSocket communication. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Camera — QR code scanning for device linking only.
+         maxSdkVersion not set because QR scanning is useful at any SDK. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+    <!-- Microphone — voice messages and encrypted calls.
+         NOT BACKGROUND: CipherChat never records in the background;
+         the FOREGROUND_SERVICE_MICROPHONE permission is declared only
+         if an active call foreground service is added in a later build. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- Notifications — foreground notification permission (Android 13+). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Vibration — haptic feedback on incoming messages/calls. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- Biometric — used by AndroidKeystoreSecureStorage for
+         hardware-backed key access requiring device unlock. -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <uses-permission android:name="android.permission.USE_FINGERPRINT" />
+
+    <application
+        android:name=".CipherChatApplication"
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.CipherChat.Splash"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:allowBackup="false"
+        android:fullBackupContent="false">
+        <!--
+            allowBackup="false" + fullBackupContent="false": CipherChat
+            explicitly opts out of Android Auto Backup. Message history
+            and cryptographic key material must NEVER be backed up to
+            Google Drive unencrypted (Android's default backup behaviour
+            would do exactly that). The user's encrypted backup feature
+            (when built) will handle this through core:crypto's secure
+            export path instead.
+        -->
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize"
+            android:screenOrientation="portrait">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Deep link handler for QR device linking:
+                 cipherchat://link/TOKEN opens MainActivity which
+                 extracts the token and routes to QrDeviceLinkScreen. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="cipherchat" android:host="link" />
+            </intent-filter>
+        </activity>
+
+    </application>
+</manifest>
