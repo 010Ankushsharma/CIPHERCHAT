@@ -1,0 +1,126 @@
+-- device table: metadata for every device linked to ANY user this
+-- client knows about (mostly: every device of every contact we've
+-- ever messaged, plus our own linked devices). Holds ONLY public
+-- metadata — no key material. See core:crypto's SecureKeyStore for
+-- where private keys actually live (never in SQLDelight, even encrypted).
+
+CREATE TABLE device (
+    id TEXT NOT NULL PRIMARY KEY,
+    owner_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    public_key TEXT NOT NULL, -- base64 — public half only, safe to cache locally
+    trust_state TEXT NOT NULL,
+    linked_at_epoch_ms INTEGER NOT NULL,
+    last_active_at_epoch_ms INTEGER NOT NULL,
+    is_current_device INTEGER NOT NULL DEFAULT 0,
+    approximate_location TEXT
+);
+
+CREATE INDEX device_owner_id ON device(owner_id);
+CREATE INDEX device_trust_state ON device(trust_state);
+
+-- auth_session table: ONLY ever holds rows for the CURRENT user's own
+-- devices (never another user's sessions) — backs the Session
+-- Manager screen ("Active Devices", "Logout All Devices").
+CREATE TABLE auth_session (
+    id TEXT NOT NULL PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    issued_at_epoch_ms INTEGER NOT NULL,
+    expires_at_epoch_ms INTEGER NOT NULL,
+    last_seen_at_epoch_ms INTEGER NOT NULL,
+    ip_approx_location TEXT,
+    login_method TEXT NOT NULL,
+    FOREIGN KEY (device_id) REFERENCES device(id) ON DELETE CASCADE
+);
+
+CREATE INDEX auth_session_user_id ON auth_session(user_id);
+
+-- crypto_session_ref: tracks Double Ratchet session EXISTENCE and
+-- STATE ONLY — never key material (root key, chain keys live in
+-- core:crypto's SecureKeyStore exclusively, as opaque blobs outside
+-- SQLDelight entirely). This table lets the UI answer "is this chat
+-- ready to send encrypted messages" without reaching into crypto storage.
+CREATE TABLE crypto_session_ref (
+    remote_user_id TEXT NOT NULL,
+    remote_device_id TEXT NOT NULL,
+    state TEXT NOT NULL, -- "not_established" | "established" | "needs_reverification" | "terminated"
+    established_at_epoch_ms INTEGER,
+    last_ratchet_at_epoch_ms INTEGER,
+    PRIMARY KEY (remote_user_id, remote_device_id)
+);
+
+-- ============================================================
+-- Queries
+-- ============================================================
+
+-- Device
+
+upsertDevice:
+INSERT OR REPLACE INTO device (
+    id, owner_id, name, platform, public_key, trust_state,
+    linked_at_epoch_ms, last_active_at_epoch_ms, is_current_device, approximate_location
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+observeDevicesForOwner:
+SELECT * FROM device WHERE owner_id = :ownerId ORDER BY last_active_at_epoch_ms DESC;
+
+observeDeviceById:
+SELECT * FROM device WHERE id = :deviceId;
+
+setDeviceTrustState:
+UPDATE device SET trust_state = :trustState WHERE id = :deviceId;
+
+renameDevice:
+UPDATE device SET name = :name WHERE id = :deviceId;
+
+deleteDevice:
+DELETE FROM device WHERE id = :deviceId;
+
+-- Auth session
+
+observeSessionsForUser:
+SELECT * FROM auth_session WHERE user_id = :userId ORDER BY last_seen_at_epoch_ms DESC;
+
+observeCurrentSession:
+SELECT auth_session.* FROM auth_session
+INNER JOIN device ON device.id = auth_session.device_id
+WHERE device.is_current_device = 1
+LIMIT 1;
+
+insertSession:
+INSERT OR REPLACE INTO auth_session (
+    id, device_id, user_id, issued_at_epoch_ms, expires_at_epoch_ms,
+    last_seen_at_epoch_ms, ip_approx_location, login_method
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+touchSessionLastSeen:
+UPDATE auth_session SET last_seen_at_epoch_ms = :nowEpochMs WHERE id = :sessionId;
+
+deleteSession:
+DELETE FROM auth_session WHERE id = :sessionId;
+
+deleteAllSessionsExceptCurrent:
+DELETE FROM auth_session WHERE device_id != (
+    SELECT id FROM device WHERE is_current_device = 1 LIMIT 1
+);
+
+deleteAllSessions:
+DELETE FROM auth_session;
+
+-- Crypto session refs
+
+upsertCryptoSessionRef:
+INSERT OR REPLACE INTO crypto_session_ref (
+    remote_user_id, remote_device_id, state, established_at_epoch_ms, last_ratchet_at_epoch_ms
+) VALUES (?, ?, ?, ?, ?);
+
+observeCryptoSessionRef:
+SELECT * FROM crypto_session_ref WHERE remote_user_id = :userId AND remote_device_id = :deviceId;
+
+observeCryptoSessionsNeedingReverification:
+SELECT * FROM crypto_session_ref WHERE state = 'needs_reverification';
+
+deleteCryptoSessionRef:
+DELETE FROM crypto_session_ref WHERE remote_user_id = :userId AND remote_device_id = :deviceId;
