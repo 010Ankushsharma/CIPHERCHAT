@@ -1,0 +1,143 @@
+-- chat table: one row per conversation surface (1:1, group, channel,
+-- community). kind_json stores the ChatKind sealed class as JSON since
+-- its shape varies per kind (member roles for groups, nesting for
+-- communities) — see Message.sq's header comment for why structured
+-- data is pushed to JSON + mapping layer rather than encoded as columns.
+
+CREATE TABLE chat (
+    id TEXT NOT NULL PRIMARY KEY,
+    kind TEXT NOT NULL, -- discriminator: "one_to_one" | "group" | "channel" | "community"
+    kind_json TEXT NOT NULL,
+    title TEXT NOT NULL,
+    avatar_url TEXT,
+    last_message_id TEXT,
+    last_message_summary TEXT,
+    last_message_sent_at_epoch_ms INTEGER,
+    unread_count INTEGER NOT NULL DEFAULT 0,
+    is_muted INTEGER NOT NULL DEFAULT 0,
+    is_pinned INTEGER NOT NULL DEFAULT 0,
+    is_archived INTEGER NOT NULL DEFAULT 0,
+    is_favorite INTEGER NOT NULL DEFAULT 0,
+    is_hidden_in_secret_folder INTEGER NOT NULL DEFAULT 0,
+    default_expiration_json TEXT NOT NULL,
+    created_at_epoch_ms INTEGER NOT NULL,
+    updated_at_epoch_ms INTEGER NOT NULL
+);
+
+-- Partial indexes: most queries filter heavily on these boolean flags,
+-- and a partial index (only indexing rows where the flag is true) is
+-- far smaller and faster than indexing the whole table when the flag
+-- is false for the vast majority of chats.
+CREATE INDEX chat_archived ON chat(updated_at_epoch_ms DESC) WHERE is_archived = 1;
+CREATE INDEX chat_favorite ON chat(updated_at_epoch_ms DESC) WHERE is_favorite = 1;
+CREATE INDEX chat_secret_folder ON chat(updated_at_epoch_ms DESC) WHERE is_hidden_in_secret_folder = 1;
+CREATE INDEX chat_active_sorted ON chat(is_pinned DESC, updated_at_epoch_ms DESC) WHERE is_archived = 0 AND is_hidden_in_secret_folder = 0;
+CREATE INDEX chat_kind ON chat(kind);
+
+-- chat_member: normalized membership for groups/channels/communities,
+-- separate from kind_json so "is user X a member of chat Y" and role
+-- checks don't require parsing JSON on every permission check.
+CREATE TABLE chat_member (
+    chat_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    role TEXT NOT NULL, -- "owner" | "admin" | "member"
+    joined_at_epoch_ms INTEGER NOT NULL,
+    PRIMARY KEY (chat_id, user_id),
+    FOREIGN KEY (chat_id) REFERENCES chat(id) ON DELETE CASCADE
+);
+
+CREATE INDEX chat_member_user_id ON chat_member(user_id);
+
+-- ============================================================
+-- Queries
+-- ============================================================
+
+observeActiveChats:
+SELECT * FROM chat
+WHERE is_archived = 0 AND is_hidden_in_secret_folder = 0
+ORDER BY is_pinned DESC, updated_at_epoch_ms DESC;
+
+observeArchivedChats:
+SELECT * FROM chat WHERE is_archived = 1 ORDER BY updated_at_epoch_ms DESC;
+
+observeFavoriteChats:
+SELECT * FROM chat WHERE is_favorite = 1 ORDER BY updated_at_epoch_ms DESC;
+
+observeUnreadChats:
+SELECT * FROM chat
+WHERE unread_count > 0 AND is_archived = 0 AND is_hidden_in_secret_folder = 0
+ORDER BY updated_at_epoch_ms DESC;
+
+observeSecretFolderChats:
+SELECT * FROM chat WHERE is_hidden_in_secret_folder = 1 ORDER BY updated_at_epoch_ms DESC;
+
+observeChatsByKind:
+SELECT * FROM chat
+WHERE kind = :kind AND is_archived = 0 AND is_hidden_in_secret_folder = 0
+ORDER BY is_pinned DESC, updated_at_epoch_ms DESC;
+
+observeChatById:
+SELECT * FROM chat WHERE id = :chatId;
+
+insertChat:
+INSERT OR REPLACE INTO chat (
+    id, kind, kind_json, title, avatar_url, last_message_id,
+    last_message_summary, last_message_sent_at_epoch_ms, unread_count,
+    is_muted, is_pinned, is_archived, is_favorite, is_hidden_in_secret_folder,
+    default_expiration_json, created_at_epoch_ms, updated_at_epoch_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+updateLastMessagePreview:
+UPDATE chat SET
+    last_message_id = :messageId,
+    last_message_summary = :summary,
+    last_message_sent_at_epoch_ms = :sentAtEpochMs,
+    updated_at_epoch_ms = :sentAtEpochMs
+WHERE id = :chatId;
+
+incrementUnreadCount:
+UPDATE chat SET unread_count = unread_count + 1 WHERE id = :chatId;
+
+clearUnreadCount:
+UPDATE chat SET unread_count = 0 WHERE id = :chatId;
+
+setMuted:
+UPDATE chat SET is_muted = :muted WHERE id = :chatId;
+
+setPinned:
+UPDATE chat SET is_pinned = :pinned WHERE id = :chatId;
+
+setFavorite:
+UPDATE chat SET is_favorite = :favorite WHERE id = :chatId;
+
+setArchived:
+UPDATE chat SET is_archived = :archived WHERE id = :chatId;
+
+setHiddenInSecretFolder:
+UPDATE chat SET is_hidden_in_secret_folder = :hidden WHERE id = :chatId;
+
+setDefaultExpiration:
+UPDATE chat SET default_expiration_json = :expirationJson WHERE id = :chatId;
+
+deleteChat:
+DELETE FROM chat WHERE id = :chatId;
+
+-- Membership
+
+addMember:
+INSERT OR REPLACE INTO chat_member (chat_id, user_id, role, joined_at_epoch_ms)
+VALUES (:chatId, :userId, :role, :joinedAtEpochMs);
+
+removeMember:
+DELETE FROM chat_member WHERE chat_id = :chatId AND user_id = :userId;
+
+setMemberRole:
+UPDATE chat_member SET role = :role WHERE chat_id = :chatId AND user_id = :userId;
+
+getMembersForChat:
+SELECT * FROM chat_member WHERE chat_id = :chatId;
+
+getChatsForMember:
+SELECT chat.* FROM chat
+INNER JOIN chat_member ON chat.id = chat_member.chat_id
+WHERE chat_member.user_id = :userId;
