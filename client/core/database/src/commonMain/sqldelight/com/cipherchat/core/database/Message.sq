@@ -1,0 +1,159 @@
+-- message table: the local, encrypted-at-rest (via SQLCipher) cache of
+-- decrypted message content. See build.gradle.kts header comment for
+-- why plaintext caching here is unavoidable given Double Ratchet's
+-- single-use message keys.
+--
+-- content_json stores the serialized MessageContent sealed class as
+-- JSON (mapped/parsed in core:data, not here — SQLDelight columns are
+-- intentionally simple scalar types, with structure pushed to the
+-- mapping layer rather than encoded into the schema itself).
+
+CREATE TABLE message (
+    id TEXT NOT NULL PRIMARY KEY,
+    chat_id TEXT NOT NULL,
+    sender_id TEXT NOT NULL,
+    content_json TEXT NOT NULL,
+    content_type TEXT NOT NULL, -- discriminator: "text" | "image" | "voice_note" | ... mirrors MessageContent subtype, indexed for content-type filtering without parsing JSON
+    status TEXT NOT NULL,
+    sent_at_epoch_ms INTEGER NOT NULL,
+    edited_at_epoch_ms INTEGER,
+    reply_to_id TEXT,
+    thread_root_id TEXT,
+    is_pinned INTEGER NOT NULL DEFAULT 0,
+    is_starred INTEGER NOT NULL DEFAULT 0,
+    expiration_json TEXT NOT NULL, -- serialized MessageExpiration
+    expires_at_epoch_ms INTEGER, -- denormalized from expiration_json for fast "find expired messages to purge" queries
+    search_text TEXT NOT NULL DEFAULT '', -- plain-text body lowercased, for searchInChat/searchGlobal; empty for non-text content types
+
+    FOREIGN KEY (chat_id) REFERENCES chat(id) ON DELETE CASCADE
+);
+
+CREATE INDEX message_chat_id_sent_at ON message(chat_id, sent_at_epoch_ms DESC);
+CREATE INDEX message_expires_at ON message(expires_at_epoch_ms) WHERE expires_at_epoch_ms IS NOT NULL;
+CREATE INDEX message_search_text ON message(search_text);
+CREATE INDEX message_thread_root ON message(thread_root_id) WHERE thread_root_id IS NOT NULL;
+
+-- message_edit: append-only edit history (Message Version History feature).
+CREATE TABLE message_edit (
+    message_id TEXT NOT NULL,
+    edited_at_epoch_ms INTEGER NOT NULL,
+    previous_content_json TEXT NOT NULL,
+    FOREIGN KEY (message_id) REFERENCES message(id) ON DELETE CASCADE
+);
+
+-- reaction: one row per (message, user, emoji) — a user can react with
+-- multiple distinct emoji on the same message, but not the same emoji twice.
+CREATE TABLE reaction (
+    message_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    emoji TEXT NOT NULL,
+    reacted_at_epoch_ms INTEGER NOT NULL,
+    PRIMARY KEY (message_id, user_id, emoji),
+    FOREIGN KEY (message_id) REFERENCES message(id) ON DELETE CASCADE
+);
+
+-- delivery_receipt: per-device delivery/read status for a sent message.
+CREATE TABLE delivery_receipt (
+    message_id TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    at_epoch_ms INTEGER NOT NULL,
+    PRIMARY KEY (message_id, device_id),
+    FOREIGN KEY (message_id) REFERENCES message(id) ON DELETE CASCADE
+);
+
+-- mention: many-to-many message <-> mentioned user, queryable independently
+-- of parsing content_json (e.g. for a future "messages that mention me" view).
+CREATE TABLE mention (
+    message_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    PRIMARY KEY (message_id, user_id),
+    FOREIGN KEY (message_id) REFERENCES message(id) ON DELETE CASCADE
+);
+
+CREATE INDEX mention_user_id ON mention(user_id);
+
+-- ============================================================
+-- Queries — SQLDelight generates a typed Kotlin function per
+-- statement below, named after the label before the colon.
+-- ============================================================
+
+observeMessagesForChat:
+SELECT * FROM message
+WHERE chat_id = :chatId
+ORDER BY sent_at_epoch_ms DESC
+LIMIT :limit;
+
+observeOlderMessages:
+SELECT * FROM message
+WHERE chat_id = :chatId AND sent_at_epoch_ms < :beforeEpochMs
+ORDER BY sent_at_epoch_ms DESC
+LIMIT :limit;
+
+insertMessage:
+INSERT OR REPLACE INTO message (
+    id, chat_id, sender_id, content_json, content_type, status,
+    sent_at_epoch_ms, edited_at_epoch_ms, reply_to_id, thread_root_id,
+    is_pinned, is_starred, expiration_json, expires_at_epoch_ms, search_text
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+updateMessageStatus:
+UPDATE message SET status = :status WHERE id = :messageId;
+
+updateMessageContent:
+UPDATE message SET content_json = :contentJson, content_type = :contentType,
+    search_text = :searchText, edited_at_epoch_ms = :editedAtEpochMs
+WHERE id = :messageId;
+
+archiveEditHistory:
+INSERT INTO message_edit (message_id, edited_at_epoch_ms, previous_content_json)
+VALUES (:messageId, :editedAtEpochMs, :previousContentJson);
+
+getEditHistory:
+SELECT * FROM message_edit WHERE message_id = :messageId ORDER BY edited_at_epoch_ms DESC;
+
+deleteMessage:
+DELETE FROM message WHERE id = :messageId;
+
+setPinned:
+UPDATE message SET is_pinned = :pinned WHERE id = :messageId;
+
+setStarred:
+UPDATE message SET is_starred = :starred WHERE id = :messageId;
+
+observePinnedMessages:
+SELECT * FROM message WHERE chat_id = :chatId AND is_pinned = 1 ORDER BY sent_at_epoch_ms DESC;
+
+observeStarredMessages:
+SELECT * FROM message WHERE is_starred = 1 ORDER BY sent_at_epoch_ms DESC;
+
+searchInChat:
+SELECT * FROM message
+WHERE chat_id = :chatId AND search_text LIKE '%' || :query || '%'
+ORDER BY sent_at_epoch_ms DESC;
+
+searchGlobal:
+SELECT * FROM message
+WHERE search_text LIKE '%' || :query || '%'
+ORDER BY sent_at_epoch_ms DESC
+LIMIT :limit;
+
+upsertReaction:
+INSERT OR REPLACE INTO reaction (message_id, user_id, emoji, reacted_at_epoch_ms)
+VALUES (:messageId, :userId, :emoji, :reactedAtEpochMs);
+
+deleteReaction:
+DELETE FROM reaction WHERE message_id = :messageId AND user_id = :userId AND emoji = :emoji;
+
+getReactionsForMessage:
+SELECT * FROM reaction WHERE message_id = :messageId;
+
+upsertDeliveryReceipt:
+INSERT OR REPLACE INTO delivery_receipt (message_id, device_id, status, at_epoch_ms)
+VALUES (:messageId, :deviceId, :status, :atEpochMs);
+
+getDeliveryReceiptsForMessage:
+SELECT * FROM delivery_receipt WHERE message_id = :messageId;
+
+findExpiredMessages:
+SELECT * FROM message WHERE expires_at_epoch_ms IS NOT NULL AND expires_at_epoch_ms <= :nowEpochMs;
