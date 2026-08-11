@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cipherchat-config
+data:
+  kafka.bootstrap.servers: "kafka-headless:9092"
+  jwt.issuer: "cipherchat-gateway"
+  jwt.audience: "cipherchat-clients"
+  log.format: "json"
+  log.level: "INFO"
+  # Prekey pool low-water mark — when a device's pool drops below
+  # this count the gateway sends a PrekeyPoolLow WebSocket event.
+  prekey.low.water.mark: "20"
