@@ -1,0 +1,158 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cipherchat-gateway
+  labels:
+    app: cipherchat-gateway
+    component: gateway
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: cipherchat-gateway
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # maxUnavailable: 0 — zero-downtime deployments. At least 3
+      # replicas are always serving traffic during a rollout. For a
+      # messaging app, even a brief unavailability during deploy is
+      # unacceptable (users mid-conversation lose their WebSocket
+      # connection; they'll reconnect but the UX disruption is real).
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: cipherchat-gateway
+      annotations:
+        # Prometheus scrape annotation — Prometheus discovers this pod
+        # and scrapes /metrics on port 8080 automatically.
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8080"
+    spec:
+      # Graceful termination: 60s gives in-flight WebSocket sessions
+      # time to drain before the pod is killed. The gateway's shutdown
+      # hook closes WebSocket connections with a close frame (not a
+      # TCP RST) so clients reconnect cleanly rather than seeing an
+      # error. 60s > the 30s WebSocket ping interval so all connections
+      # will have received at least one ping before termination.
+      terminationGracePeriodSeconds: 60
+
+      containers:
+        - name: gateway
+          image: cipherchat/gateway:latest  # overridden per environment via Kustomize
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+
+          env:
+            - name: PORT
+              value: "8080"
+            - name: HOST
+              value: "0.0.0.0"
+            - name: LOG_FORMAT
+              value: "json"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: cipherchat-db-secret
+                  key: url
+            - name: DATABASE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: cipherchat-db-secret
+                  key: username
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cipherchat-db-secret
+                  key: password
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: cipherchat-redis-secret
+                  key: url
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              valueFrom:
+                configMapKeyRef:
+                  name: cipherchat-config
+                  key: kafka.bootstrap.servers
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: cipherchat-jwt-secret
+                  key: secret
+            - name: JWT_ISSUER
+              valueFrom:
+                configMapKeyRef:
+                  name: cipherchat-config
+                  key: jwt.issuer
+            - name: JWT_AUDIENCE
+              valueFrom:
+                configMapKeyRef:
+                  name: cipherchat-config
+                  key: jwt.audience
+
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+            # Memory limit = 1Gi. The gateway JVM is configured with
+            # -XX:MaxRAMPercentage=75.0 (750MB heap) + ~250MB for
+            # off-heap (Netty direct buffers, metaspace, thread stacks).
+            # Total stays safely under the 1Gi pod limit.
+
+          livenessProbe:
+            # /metrics endpoint is a reliable liveness signal — if the
+            # JVM is alive and Ktor is running, Micrometer will respond.
+            # Using a dedicated /healthz endpoint would be slightly more
+            # correct but adds an extra route; /metrics is already there.
+            httpGet:
+              path: /metrics
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 2
+            # Readiness probe is stricter (lower failureThreshold) than
+            # liveness — we'd rather briefly remove a pod from the load
+            # balancer (readiness failure) than restart it (liveness
+            # failure), which would drop all WebSocket connections it holds.
+
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp     # JVM needs a writable /tmp
+
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+      # Spread pods across availability zones — if one zone goes down,
+      # at least one replica in another zone continues serving traffic.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: cipherchat-gateway
