@@ -1,0 +1,74 @@
+# CipherChat Gateway — Multi-stage Dockerfile
+#
+# Stage 1 (builder): Full JDK + Gradle to compile the fat JAR.
+# Stage 2 (runtime): Minimal JRE only — no build tools, no Gradle
+#   cache, no source code. Runtime image is ~200MB vs ~600MB for a
+#   single-stage build with JDK + Gradle still present.
+#
+# Build:   docker build -f docker/Dockerfile.gateway -t cipherchat-gateway .
+# Run:     docker run -p 8080:8080 cipherchat-gateway
+
+# ---- Stage 1: Build ------------------------------------------------
+FROM eclipse-temurin:17-jdk-alpine AS builder
+
+WORKDIR /build
+
+# Copy Gradle wrapper and version catalogs first — these change rarely
+# and Docker layer-caches them. Only a version bump invalidates this
+# layer, not every source code change.
+COPY gradlew .
+COPY gradle/ gradle/
+COPY settings.gradle.kts .
+COPY build.gradle.kts .
+
+# Declare submodule build files before source — same caching rationale.
+COPY shared/build.gradle.kts shared/
+COPY auth-service/build.gradle.kts auth-service/
+COPY messaging-service/build.gradle.kts messaging-service/
+COPY gateway/build.gradle.kts gateway/
+
+# Download dependencies (cached as long as build files don't change).
+RUN ./gradlew dependencies --no-daemon --quiet || true
+
+# Now copy source — this layer only invalidates when source changes.
+COPY shared/src shared/src
+COPY auth-service/src auth-service/src
+COPY messaging-service/src messaging-service/src
+COPY gateway/src gateway/src
+
+# Build the fat JAR (shadowJar or installDist — using installDist here
+# since it produces a proper start script rather than a fat JAR, which
+# avoids ZIP64 issues with very large JARs and is easier to inspect).
+RUN ./gradlew :gateway:installDist --no-daemon --quiet
+
+# ---- Stage 2: Runtime ----------------------------------------------
+FROM eclipse-temurin:17-jre-alpine AS runtime
+
+# Run as non-root — principle of least privilege. A compromised
+# container process should not have root on the host if the container
+# runtime escapes. This is a baseline security requirement for any
+# containerized service, not an optional hardening step.
+RUN addgroup -S cipherchat && adduser -S cipherchat -G cipherchat
+USER cipherchat
+
+WORKDIR /app
+
+COPY --from=builder /build/gateway/build/install/gateway/ .
+
+# JVM flags for container-aware resource usage:
+#   -XX:+UseContainerSupport  — JVM respects cgroup CPU/memory limits
+#                               instead of reading host resources (which
+#                               would cause the JVM to allocate far more
+#                               heap than the container is allowed).
+#   -XX:MaxRAMPercentage=75.0 — Use 75% of container memory for heap,
+#                               leaving 25% for off-heap (Netty direct
+#                               buffers, metaspace, thread stacks).
+#   -XX:+UseG1GC              — G1 GC for predictable low-latency pauses
+#                               (better than default GC for a long-lived
+#                               server process handling many concurrent
+#                               WebSocket connections).
+ENV JAVA_OPTS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:+UseG1GC"
+
+EXPOSE 8080
+
+CMD ["sh", "-c", "bin/gateway $JAVA_OPTS"]
