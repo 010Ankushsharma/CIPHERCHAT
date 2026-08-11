@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Base resources — shared across all environments.
+# Overlays (staging, production) patch specific values on top
+# without duplicating the full manifests.
+resources:
+  - gateway-deployment.yaml
+  - gateway-service.yaml
+  - configmap.yaml
+
+# Common labels applied to every resource — makes filtering by
+# app and version consistent across kubectl commands and Grafana.
+commonLabels:
+  app.kubernetes.io/name: cipherchat
+  app.kubernetes.io/managed-by: kustomize
