@@ -1,0 +1,68 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: cipherchat-gateway
+  labels:
+    app: cipherchat-gateway
+spec:
+  selector:
+    app: cipherchat-gateway
+  ports:
+    - port: 80
+      targetPort: 8080
+      name: http
+  # Session affinity: routes a client's HTTP requests to the same pod
+  # for the duration of a session. For REST API calls this is purely a
+  # performance optimisation (warm JIT, warm connection pool). For
+  # WebSocket connections it's more important: the initial HTTP upgrade
+  # and all subsequent WS frames must hit the same pod (a different pod
+  # wouldn't have the in-memory WebSocket session). ClientIP affinity
+  # covers most cases; true sticky sessions for WebSocket at scale
+  # require the Redis-backed cross-node routing in WebSocketHandler.kt.
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 3600
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: cipherchat-gateway-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cipherchat-gateway
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 75
+  behavior:
+    scaleUp:
+      # Scale up fast — a sudden traffic spike (viral moment, push
+      # notification burst) should add capacity within 60s, not 5 min.
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 4
+          periodSeconds: 60
+    scaleDown:
+      # Scale down slowly — keep extra capacity for 10 minutes after
+      # traffic drops to avoid thrashing (rapidly adding then removing
+      # pods, each causing WebSocket connection drops).
+      stabilizationWindowSeconds: 600
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 120
