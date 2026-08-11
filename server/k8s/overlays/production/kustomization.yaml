@@ -1,0 +1,50 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: cipherchat-production
+
+bases:
+  - ../../base
+
+# Pin to a specific image SHA digest in production — never 'latest'.
+# 'latest' in production means a pod restart or scale-up event can
+# silently pull a different image version than what was tested,
+# making deployments non-reproducible. SHA pinning ensures every
+# pod in the cluster runs exactly the same image binary.
+images:
+  - name: cipherchat/gateway
+    newName: cipherchat/gateway
+    digest: sha256:REPLACE_WITH_ACTUAL_SHA256_DIGEST_FROM_CI_PIPELINE
+
+patches:
+  # Production replica count: minimum 5 for high availability
+  # across 3 availability zones (at least 1-2 pods per zone).
+  - patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 5
+    target:
+      kind: Deployment
+      name: cipherchat-gateway
+
+  # Production HPA: higher max replicas for traffic spikes.
+  - patch: |-
+      - op: replace
+        path: /spec/maxReplicas
+        value: 50
+    target:
+      kind: HorizontalPodAutoscaler
+      name: cipherchat-gateway-hpa
+
+  # Tighter resource requests in production — right-sized based
+  # on observed p99 usage in staging load tests.
+  - patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: "500m"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: "768Mi"
+    target:
+      kind: Deployment
+      name: cipherchat-gateway
