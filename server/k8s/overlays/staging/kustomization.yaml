@@ -1,0 +1,59 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: cipherchat-staging
+
+bases:
+  - ../../base
+
+images:
+  - name: cipherchat/gateway
+    newName: cipherchat/gateway
+    newTag: staging-latest
+    # Staging uses a mutable tag rather than SHA digest — this is
+    # intentional: staging tracks the latest build from the main
+    # branch continuously, making it easy for the team to test
+    # in-progress features without a deploy step. Production always
+    # uses SHA digests (see production overlay).
+
+patches:
+  # Staging: 2 replicas is enough for functional testing; saves cost.
+  - patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+    target:
+      kind: Deployment
+      name: cipherchat-gateway
+
+  # Staging HPA: lower bounds to avoid wasting resources.
+  - patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 2
+      - op: replace
+        path: /spec/maxReplicas
+        value: 5
+    target:
+      kind: HorizontalPodAutoscaler
+      name: cipherchat-gateway-hpa
+
+  # Relaxed resource limits in staging — functional correctness
+  # matters more than right-sizing; use staging load tests to
+  # inform the production resource requests instead.
+  - patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: "125m"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: "384Mi"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "500m"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: "512Mi"
+    target:
+      kind: Deployment
+      name: cipherchat-gateway
