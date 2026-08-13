@@ -1,0 +1,110 @@
+version: "3.9"
+
+# CipherChat local development stack.
+# Start everything: docker compose up -d
+# Stop everything:  docker compose down
+# Wipe volumes:     docker compose down -v
+#
+# Services:
+#   postgres  — primary database (auth + messaging schemas)
+#   redis     — session cache, WebSocket routing registry, ephemeral presence
+#   kafka     — message fan-out event bus
+#   gateway   — Ktor application (builds from source via Dockerfile)
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: cipherchat_postgres
+    environment:
+      POSTGRES_USER: cipherchat
+      POSTGRES_PASSWORD: localdev_password_never_use_in_prod
+      POSTGRES_DB: cipherchat
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cipherchat"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: cipherchat_redis
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save ""
+    # --save "" disables RDB persistence — Redis is used only for
+    # ephemeral state (sessions, presence, WS routing). Losing it on
+    # restart is acceptable; clients reconnect and re-establish state.
+    # If session durability matters in staging/prod, enable AOF instead.
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: cipherchat_kafka
+    # KRaft mode — no Zookeeper dependency. Kafka 3.8+ supports KRaft
+    # in production. For local dev this halves the container count vs
+    # the old Zookeeper-required setup.
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 24          # short retention for dev; prod: 168 (7 days)
+      KAFKA_NUM_PARTITIONS: 4                # 4 partitions for messages topic covers dev load
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1    # single broker in dev; prod: 3
+      CLUSTER_ID: cipherchat-local-cluster-1
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  gateway:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.gateway
+    container_name: cipherchat_gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      PORT: 8080
+      HOST: 0.0.0.0
+      DATABASE_URL: jdbc:postgresql://postgres:5432/cipherchat_auth
+      DATABASE_USER: cipherchat
+      DATABASE_PASSWORD: localdev_password_never_use_in_prod
+      REDIS_URL: redis://redis:6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      JWT_SECRET: localdev_jwt_secret_min_32_chars_never_use_in_prod
+      JWT_ISSUER: cipherchat-gateway
+      JWT_AUDIENCE: cipherchat-clients
+    ports:
+      - "8080:8080"
+    restart: on-failure:3
+
+volumes:
+  postgres_data:
